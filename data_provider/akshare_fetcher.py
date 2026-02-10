@@ -1520,6 +1520,79 @@ class AkshareFetcher(BaseFetcher):
             logger.error(f"[Akshare] 新浪接口获取板块排行也失败: {e}")
             return None
 
+    def get_first_level_industry_list(self) -> Optional[List[str]]:
+        """
+        Get list of first-level industry (sector) names from East Money industry board.
+
+        Data source: ak.stock_board_industry_name_em()
+        Returns list of 板块名称 which can be used for industry hist and MA5 filtering.
+        """
+        import akshare as ak
+
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+            logger.info("[API调用] ak.stock_board_industry_name_em() 获取一级行业列表...")
+            df = ak.stock_board_industry_name_em()
+            if df is not None and not df.empty and "板块名称" in df.columns:
+                names = df["板块名称"].astype(str).str.strip().tolist()
+                logger.info(f"[Akshare] 一级行业数量: {len(names)}")
+                return names
+        except Exception as e:
+            logger.warning(f"[Akshare] 获取一级行业列表失败: {e}")
+        return None
+
+    def get_industry_board_hist_em(
+        self,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        period: str = "daily",
+    ) -> Optional[pd.DataFrame]:
+        """
+        Get industry board history (East Money). Used for monthly close and MA5.
+
+        Args:
+            symbol: Industry name (板块名称), e.g. from get_first_level_industry_list().
+            start_date: Start date YYYY-MM-DD.
+            end_date: End date YYYY-MM-DD.
+            period: 'daily' or '月线' if supported by akshare.
+
+        Returns:
+            DataFrame with columns date, close (and open, high, low, volume if present);
+            None on failure.
+        """
+        import akshare as ak
+
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+            start = start_date.replace("-", "")
+            end = end_date.replace("-", "")
+            logger.info("[API调用] ak.stock_board_industry_hist_em(symbol=%s, ...)", symbol[:20])
+            df = ak.stock_board_industry_hist_em(
+                symbol=symbol,
+                period=period,
+                start_date=start,
+                end_date=end,
+                adjust="",
+            )
+            if df is None or df.empty:
+                return None
+            # Normalize columns: 日期 -> date, 收盘 -> close
+            rename = {"日期": "date", "收盘": "close"}
+            if "日期" in df.columns:
+                df = df.rename(columns=rename)
+            if "date" not in df.columns or "close" not in df.columns:
+                return None
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df["close"] = pd.to_numeric(df["close"], errors="coerce")
+            df = df.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
+            return df
+        except Exception as e:
+            logger.debug(f"[Akshare] 行业板块历史 symbol={symbol[:20]} 失败: {e}")
+            return None
+
 
 if __name__ == "__main__":
     # 测试代码

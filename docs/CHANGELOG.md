@@ -5,6 +5,15 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+- 📊 **五月均线上一级行业筛选**
+  - 新增筛选「当前月收盘价在五月均线（月线 MA5）之上」的一级行业
+  - 数据层：AkshareFetcher 支持 `get_first_level_industry_list`、`get_industry_board_hist_em`
+  - 管理层：DataFetcherManager.get_industries_above_ma5_monthly()、MarketAnalyzer.get_industries_above_ma5_monthly()
+  - API：GET `/api/v1/stocks/industries/above-ma5-monthly` 返回行业列表（按收盘-均线降序）
+
 ## [3.0.5] - 2026-02-08
 
 ### 修复

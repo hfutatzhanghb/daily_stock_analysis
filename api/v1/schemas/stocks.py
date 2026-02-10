@@ -93,3 +93,18 @@ class StockHistoryResponse(BaseModel):
                 "data": []
             }
         }
+
+
+class IndustryAboveMA5Item(BaseModel):
+    """五月均线上一级行业单项"""
+    name: str = Field(..., description="行业名称")
+    close: float = Field(..., description="最新月收盘价")
+    ma5_monthly: float = Field(..., description="五月均线（月线 MA5）")
+
+
+class IndustriesAboveMA5Response(BaseModel):
+    """五月均线上一级行业列表响应"""
+    industries: List[IndustryAboveMA5Item] = Field(
+        default_factory=list,
+        description="当前月收盘价在五月均线之上的一级行业列表，按(收盘-均线)降序"
+    )

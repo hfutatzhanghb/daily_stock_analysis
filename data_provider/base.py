@@ -18,7 +18,7 @@ import logging
 import random
 import time
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Tuple, Dict, Any
 
 import pandas as pd
@@ -865,3 +865,83 @@ class DataFetcherManager:
                 logger.warning(f"[{fetcher.name}] 获取板块排行失败: {e}")
                 continue
         return [], []
+
+    def get_industries_above_ma5_monthly(
+        self,
+        min_months: int = 6,
+        daily_days: int = 180,
+    ) -> List[Dict[str, Any]]:
+        """
+        Filter first-level industries whose latest monthly close is above 5-month MA (五月均线).
+
+        Uses industry board history (daily), resamples to monthly, computes MA5 on monthly
+        close, and returns industries where close > MA5. Requires a fetcher that implements
+        get_first_level_industry_list and get_industry_board_hist_em (e.g. AkshareFetcher).
+
+        Args:
+            min_months: Minimum number of monthly bars required to compute MA5 (default 6).
+            daily_days: Number of calendar days of daily data to fetch per industry (default 180).
+
+        Returns:
+            List of dicts: [{"name": str, "close": float, "ma5_monthly": float}, ...],
+            sorted by (close - ma5_monthly) descending. Empty list if no such fetcher or all fail.
+        """
+        fetcher = None
+        for f in self._fetchers:
+            if hasattr(f, "get_first_level_industry_list") and hasattr(f, "get_industry_board_hist_em"):
+                fetcher = f
+                break
+        if not fetcher:
+            logger.warning("[DataFetcherManager] 无支持一级行业列表与历史的 Fetcher，跳过五月均线筛选")
+            return []
+
+        try:
+            names = fetcher.get_first_level_industry_list()
+        except Exception as e:
+            logger.warning(f"[DataFetcherManager] 获取一级行业列表失败: {e}")
+            return []
+
+        if not names:
+            return []
+
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_dt = datetime.now() - timedelta(days=daily_days)
+        start_date = start_dt.strftime("%Y-%m-%d")
+
+        result = []
+        for name in names:
+            try:
+                df = fetcher.get_industry_board_hist_em(
+                    symbol=name,
+                    start_date=start_date,
+                    end_date=end_date,
+                    period="daily",
+                )
+                if df is None or df.empty or len(df) < 20:
+                    continue
+                df = df.set_index("date").sort_index()
+                # Resample to month-end, take last close of each month
+                try:
+                    monthly = df["close"].resample("ME").last().dropna()
+                except TypeError:
+                    monthly = df["close"].resample("M").last().dropna()
+                if len(monthly) < min_months:
+                    continue
+                ma5 = monthly.rolling(window=5, min_periods=5).mean()
+                if pd.isna(ma5.iloc[-1]) or ma5.iloc[-1] <= 0:
+                    continue
+                last_close = float(monthly.iloc[-1])
+                last_ma5 = float(ma5.iloc[-1])
+                if last_close > last_ma5:
+                    result.append({
+                        "name": name,
+                        "close": round(last_close, 2),
+                        "ma5_monthly": round(last_ma5, 2),
+                    })
+            except Exception as e:
+                logger.debug(f"[DataFetcherManager] 行业 {name} 五月均线计算失败: {e}")
+                continue
+
+        result.sort(key=lambda x: (x["close"] - x["ma5_monthly"]), reverse=True)
+        logger.info(f"[DataFetcherManager] 五月均线上一级行业数量: {len(result)}")
+        return result

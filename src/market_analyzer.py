@@ -202,6 +202,35 @@ class MarketAnalyzer:
 
         except Exception as e:
             logger.error(f"[大盘] 获取板块涨跌榜失败: {e}")
+
+    def get_industries_above_ma5_monthly(
+        self,
+        min_months: int = 6,
+        daily_days: int = 180,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get first-level industries whose latest monthly close is above 5-month MA (五月均线).
+
+        Uses industry board daily history, resamples to monthly, computes MA5 on monthly close,
+        and returns industries where close > MA5. Depends on data source supporting industry
+        list and industry hist (e.g. Akshare).
+
+        Args:
+            min_months: Minimum monthly bars to compute MA5 (default 6).
+            daily_days: Calendar days of daily data per industry (default 180).
+
+        Returns:
+            List of dicts: [{"name": str, "close": float, "ma5_monthly": float}, ...],
+            sorted by (close - ma5_monthly) descending.
+        """
+        try:
+            return self.data_manager.get_industries_above_ma5_monthly(
+                min_months=min_months,
+                daily_days=daily_days,
+            )
+        except Exception as e:
+            logger.error(f"[大盘] 获取五月均线上一级行业失败: {e}")
+            return []
     
     # def _get_north_flow(self, overview: MarketOverview):
     #     """获取北向资金流入"""
