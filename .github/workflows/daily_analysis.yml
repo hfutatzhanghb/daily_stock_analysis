@@ -11,9 +11,10 @@ on:
       mode:
         description: '运行模式'
         required: true
-        default: 'full'
+        default: 'sectors-ma5'
         type: choice
         options:
+          - sectors-ma5   # 仅五月均线上一级行业板块（默认）
           - full          # 完整分析（股票+大盘）
           - market-only   # 仅大盘复盘
           - stocks-only   # 仅股票分析
@@ -155,8 +156,8 @@ jobs:
           REALTIME_SOURCE_PRIORITY: ${{ vars.REALTIME_SOURCE_PRIORITY || 'tencent,akshare_sina,efinance,akshare_em' }}
           
         run: |
-          # 判断运行模式
-          MODE="${{ github.event.inputs.mode || 'full' }}"
+          # 判断运行模式（定时触发无 inputs，默认仅输出五月均线上行业；手动触发可用 inputs.mode）
+          MODE="${{ github.event.inputs.mode || 'sectors-ma5' }}"
           
           echo "=========================================="
           echo "🚀 A股自选股智能分析系统"
@@ -188,7 +189,9 @@ jobs:
           echo ""
           
           # 执行分析
-          if [ "$MODE" = "market-only" ]; then
+          if [ "$MODE" = "sectors-ma5" ]; then
+            python main.py --industries-ma5-only
+          elif [ "$MODE" = "market-only" ]; then
             python main.py --market-review
           elif [ "$MODE" = "stocks-only" ]; then
             python main.py --no-market-review

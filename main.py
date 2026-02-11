@@ -66,6 +66,7 @@ def parse_arguments() -> argparse.Namespace:
   python main.py --single-notify    # 启用单股推送模式（每分析完一只立即推送）
   python main.py --schedule         # 启用定时任务模式
   python main.py --market-review    # 仅运行大盘复盘
+  python main.py --industries-ma5-only  # 仅输出五月均线上的行业板块
         '''
     )
 
@@ -122,6 +123,12 @@ def parse_arguments() -> argparse.Namespace:
         '--no-market-review',
         action='store_true',
         help='跳过大盘复盘分析'
+    )
+
+    parser.add_argument(
+        '--industries-ma5-only',
+        action='store_true',
+        help='仅输出五月均线之上的一级行业板块，不执行个股分析和大盘复盘'
     )
 
     parser.add_argument(
@@ -483,7 +490,43 @@ def main() -> int:
             )
             return 0
 
-        # 模式1: 仅大盘复盘
+        # 模式1: 仅输出五月均线上的行业板块
+        if getattr(args, 'industries_ma5_only', False):
+            from src.market_analyzer import MarketAnalyzer
+            from src.notification import NotificationService
+
+            logger.info("模式: 仅输出五月均线上一级行业板块")
+            notifier = NotificationService()
+            market_analyzer = MarketAnalyzer()
+            industries = market_analyzer.get_industries_above_ma5_monthly()
+            date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+            if industries:
+                lines = [
+                    f"# 五月均线之上一级行业板块\n",
+                    f"*更新: {date_str}*\n",
+                    "",
+                    "| 行业名称 | 月收盘 | 五月均线 |",
+                    "|----------|--------|----------|",
+                ]
+                for item in industries:
+                    name = item.get("name", "")
+                    close = item.get("close", 0)
+                    ma5 = item.get("ma5_monthly", 0)
+                    lines.append(f"| {name} | {close:.2f} | {ma5:.2f} |")
+                report_text = "\n".join(lines)
+                logger.info("五月均线之上一级行业:\n%s", report_text)
+                report_filename = f"industries_above_ma5_{datetime.now().strftime('%Y%m%d')}.md"
+                notifier.save_report_to_file(report_text, report_filename)
+                if not args.no_notify and notifier.is_available():
+                    notifier.send(f"📊 五月均线之上一级行业\n\n{report_text}")
+            else:
+                msg = "未获取到五月均线之上一级行业数据（可能数据源不可用）"
+                logger.warning(msg)
+                if not args.no_notify and notifier.is_available():
+                    notifier.send(f"📊 五月均线行业\n\n{msg}")
+            return 0
+
+        # 模式2: 仅大盘复盘
         if args.market_review:
             from src.analyzer import GeminiAnalyzer
             from src.core.market_review import run_market_review
@@ -521,7 +564,7 @@ def main() -> int:
             )
             return 0
         
-        # 模式2: 定时任务模式
+        # 模式3: 定时任务模式
         if args.schedule or config.schedule_enabled:
             logger.info("模式: 定时任务")
             logger.info(f"每日执行时间: {config.schedule_time}")
@@ -538,7 +581,7 @@ def main() -> int:
             )
             return 0
         
-        # 模式3: 正常单次运行
+        # 模式4: 正常单次运行
         run_full_analysis(config, args, stock_codes)
         
         logger.info("\n程序执行完成")
