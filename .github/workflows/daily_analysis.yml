@@ -15,6 +15,7 @@ on:
         type: choice
         options:
           - sectors-ma5   # 仅五月均线上一级行业板块（默认）
+          - cxg-ths       # 创历史新高（并强调连续≥2天）
           - full          # 完整分析（股票+大盘）
           - market-only   # 仅大盘复盘
           - stocks-only   # 仅股票分析
@@ -191,6 +192,8 @@ jobs:
           # 执行分析
           if [ "$MODE" = "sectors-ma5" ]; then
             python main.py --industries-ma5-only
+          elif [ "$MODE" = "cxg-ths" ]; then
+            python main.py --cxg-ths
           elif [ "$MODE" = "market-only" ]; then
             python main.py --market-review
           elif [ "$MODE" = "stocks-only" ]; then

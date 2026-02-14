@@ -36,6 +36,7 @@ from sqlalchemy import (
     select,
     and_,
     desc,
+    delete,
 )
 from sqlalchemy.orm import (
     declarative_base,
@@ -47,6 +48,17 @@ from sqlalchemy.exc import IntegrityError
 from src.config import get_config
 
 logger = logging.getLogger(__name__)
+
+
+def _float_or_none(x: Any) -> Optional[float]:
+    """将可选数值列的值转为 float，无效或缺失则返回 None。"""
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return None
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
 
 # SQLAlchemy ORM 基类
 Base = declarative_base()
@@ -361,6 +373,72 @@ class BacktestSummary(Base):
             name='uix_backtest_summary_scope_code_window_version',
         ),
     )
+
+
+class IndustryBoardEm(Base):
+    """
+    东财行业板块快照（来源：stock_board_industry_name_em）。
+    存储：排名、板块名称、板块代码、总市值。
+    """
+    __tablename__ = "industry_board_em"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rank = Column(Integer, nullable=False, index=True)  # 排名（按总市值降序 1-based）
+    name = Column(String(64), nullable=False, index=True)  # 板块名称
+    code = Column(String(16), nullable=False, unique=True, index=True)  # 板块代码
+    total_market_cap = Column(Float)  # 总市值
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    def __repr__(self) -> str:
+        return f"<IndustryBoardEm(rank={self.rank}, name={self.name!r}, code={self.code})>"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "rank": self.rank,
+            "name": self.name,
+            "code": self.code,
+            "total_market_cap": self.total_market_cap,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class StockRankCxgThs(Base):
+    """
+    同花顺历史新高榜单。
+    数据来源：akshare stock_rank_cxg_ths(symbol="历史新高")。
+    """
+    __tablename__ = "stock_rank_cxg_ths"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rank = Column(Integer, nullable=False, index=True)  # 序号（1-based 排名）
+    code = Column(String(16), nullable=False, index=True)  # 股票代码
+    name = Column(String(64), nullable=True, index=True)  # 股票简称
+    pct_chg = Column(Float)  # 涨跌幅（%）
+    turnover_rate = Column(Float)  # 换手率（%）
+    latest_price = Column(Float)  # 最新价
+    prev_high = Column(Float)  # 前期高点
+    prev_high_date = Column(String(16))  # 前期高点日期
+    consecutive_days = Column(Integer, default=1, nullable=True)  # 连续创历史新高天数，新上榜为 1
+    data_date = Column(Date, nullable=True, index=True)  # 数据更新日期（年月日），用于同日幂等
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    def __repr__(self) -> str:
+        return f"<StockRankCxgThs(rank={self.rank}, code={self.code!r}, name={self.name!r})>"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "rank": self.rank,
+            "code": self.code,
+            "name": self.name,
+            "pct_chg": self.pct_chg,
+            "turnover_rate": self.turnover_rate,
+            "latest_price": self.latest_price,
+            "prev_high": self.prev_high,
+            "prev_high_date": self.prev_high_date,
+            "consecutive_days": self.consecutive_days,
+            "data_date": self.data_date.isoformat() if self.data_date else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
 
 
 class DatabaseManager:
@@ -942,7 +1020,166 @@ class DatabaseManager:
                 raise
         
         return saved_count
-    
+
+    def save_industry_board_em(self, df: pd.DataFrame) -> int:
+        """
+        保存东财行业板块（排名、板块名称、板块代码、总市值）。
+        按总市值降序排序后，覆盖写入：先清空表再全量插入。
+        库中 rank 为按总市值降序的 1-based 排名。
+        """
+        if df is None or df.empty:
+            logger.warning("save_industry_board_em: 传入 DataFrame 为空，跳过")
+            return 0
+        col_name = "板块名称" if "板块名称" in df.columns else None
+        col_code = "板块代码" if "板块代码" in df.columns else None
+        col_cap = "总市值" if "总市值" in df.columns else None
+        if not all([col_name, col_code]):
+            logger.warning("save_industry_board_em: 缺少必选列（板块名称/板块代码）")
+            return 0
+        # 按总市值降序排序，缺失值排最后
+        df = df.copy()
+        if col_cap and col_cap in df.columns:
+            df[col_cap] = pd.to_numeric(df[col_cap], errors="coerce")
+            df = df.sort_values(by=col_cap, ascending=False, na_position="last")
+        else:
+            col_cap = None
+        with self.get_session() as session:
+            try:
+                session.execute(delete(IndustryBoardEm))
+                for rank_one_based, (_, row) in enumerate(df.iterrows(), start=1):
+                    code_val = str(row[col_code]).strip() if pd.notna(row.get(col_code)) else None
+                    if not code_val:
+                        continue
+                    total_cap = None
+                    if col_cap and col_cap in row.index and pd.notna(row.get(col_cap)):
+                        try:
+                            total_cap = float(row[col_cap])
+                        except (TypeError, ValueError):
+                            pass
+                    name_val = str(row[col_name]).strip() if pd.notna(row.get(col_name)) else ""
+                    session.add(
+                        IndustryBoardEm(
+                            rank=rank_one_based,
+                            name=name_val,
+                            code=code_val,
+                            total_market_cap=total_cap,
+                        )
+                    )
+                session.commit()
+                logger.info("save_industry_board_em: 已按总市值降序覆盖写入 %d 条", len(df))
+            except Exception as e:
+                session.rollback()
+                logger.error("save_industry_board_em 失败: %s", e)
+                raise
+        return len(df)
+
+    def get_industry_board_em(self) -> List[IndustryBoardEm]:
+        """查询全部行业板块记录，按排名升序返回。"""
+        with self.get_session() as session:
+            rows = session.execute(
+                select(IndustryBoardEm).order_by(IndustryBoardEm.rank)
+            ).scalars().all()
+            return list(rows)
+
+    def save_stock_rank_cxg_ths(self, df: pd.DataFrame) -> int:
+        """
+        保存同花顺历史新高榜单。按股票代码增量更新：
+        - 本次新上榜：插入，连续创新高天数 = 1。
+        - 已在表中且本次仍上榜：不插入，仅更新榜单字段并将连续创新高天数 +1。
+        - 已在表中但本次未上榜：从表中删除。
+        期望 DataFrame 列：序号、股票代码、股票简称、涨跌幅、换手率、最新价、前期高点、前期高点日期。
+        返回：当前表中榜单条数（更新后）。
+        幂等：若某条记录的数据更新日期已是当天，则不增加连续创新高天数。
+        """
+        if df is None or df.empty:
+            logger.warning("save_stock_rank_cxg_ths: empty DataFrame, skip")
+            return 0
+        today = date.today()
+        col_rank = "序号" if "序号" in df.columns else None
+        col_code = "股票代码" if "股票代码" in df.columns else None
+        col_name = "股票简称" if "股票简称" in df.columns else None
+        if not col_code:
+            logger.warning("save_stock_rank_cxg_ths: missing required column 股票代码")
+            return 0
+        # 本次上榜的股票代码集合（去重）
+        new_codes = set()
+        for _, row in df.iterrows():
+            c = str(row[col_code]).strip() if pd.notna(row.get(col_code)) else ""
+            if c:
+                new_codes.add(c)
+        with self.get_session() as session:
+            try:
+                existing_rows = session.execute(select(StockRankCxgThs)).scalars().all()
+                existing_by_code = {r.code: r for r in existing_rows}
+                # 删除未继续创新高的股票（本次不在榜单中的代码）
+                for code in list(existing_by_code.keys()):
+                    if code not in new_codes:
+                        session.delete(existing_by_code[code])
+                # 更新或插入本次榜单
+                for _, row in df.iterrows():
+                    code_val = str(row[col_code]).strip() if pd.notna(row.get(col_code)) else None
+                    if not code_val:
+                        continue
+                    rank_val = int(row[col_rank]) if col_rank and pd.notna(row.get(col_rank)) else None
+                    name_val = str(row[col_name]).strip() if col_name and pd.notna(row.get(col_name)) else None
+                    pct_chg = _float_or_none(row.get("涨跌幅"))
+                    turnover_rate = _float_or_none(row.get("换手率"))
+                    latest_price = _float_or_none(row.get("最新价"))
+                    prev_high = _float_or_none(row.get("前期高点"))
+                    prev_high_date = str(row["前期高点日期"]).strip() if pd.notna(row.get("前期高点日期")) else None
+                    if code_val in existing_by_code:
+                        rec = existing_by_code[code_val]
+                        old_data_date = rec.data_date  # 更新前的数据日期，用于幂等判断
+                        rec.rank = rank_val
+                        rec.name = name_val
+                        rec.pct_chg = pct_chg
+                        rec.turnover_rate = turnover_rate
+                        rec.latest_price = latest_price
+                        rec.prev_high = prev_high
+                        rec.prev_high_date = prev_high_date
+                        rec.data_date = today
+                        # 同一天内重复执行不增加连续天数，保证幂等
+                        if old_data_date is None or old_data_date != today:
+                            rec.consecutive_days = (rec.consecutive_days or 1) + 1
+                    else:
+                        session.add(
+                            StockRankCxgThs(
+                                rank=rank_val,
+                                code=code_val,
+                                name=name_val,
+                                pct_chg=pct_chg,
+                                turnover_rate=turnover_rate,
+                                latest_price=latest_price,
+                                prev_high=prev_high,
+                                prev_high_date=prev_high_date,
+                                consecutive_days=1,
+                                data_date=today,
+                            )
+                        )
+                session.commit()
+                count = session.execute(select(StockRankCxgThs)).scalars().all()
+                total = len(count)
+                logger.info("save_stock_rank_cxg_ths: updated, total %d rows", total)
+            except Exception as e:
+                session.rollback()
+                logger.error("save_stock_rank_cxg_ths failed: %s", e)
+                raise
+        return total
+
+    def get_stock_rank_cxg_ths(self) -> List[StockRankCxgThs]:
+        """查询全部同花顺历史新高记录，按排名升序返回。"""
+        with self.get_session() as session:
+            rows = session.execute(
+                select(StockRankCxgThs).order_by(StockRankCxgThs.rank)
+            ).scalars().all()
+            return list(rows)
+
+    def drop_and_create_stock_rank_cxg_ths(self) -> None:
+        """删除 stock_rank_cxg_ths 表并按当前模型重新创建（用于一次性重建表结构）。"""
+        StockRankCxgThs.__table__.drop(self._engine, checkfirst=True)
+        StockRankCxgThs.__table__.create(self._engine)
+        logger.info("drop_and_create_stock_rank_cxg_ths: table recreated")
+
     def get_analysis_context(
         self, 
         code: str,

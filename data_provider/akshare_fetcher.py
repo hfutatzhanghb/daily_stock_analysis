@@ -1576,7 +1576,7 @@ class AkshareFetcher(BaseFetcher):
                 period=period,
                 start_date=start,
                 end_date=end,
-                adjust="",
+                adjust="qfq",
             )
             if df is None or df.empty:
                 return None

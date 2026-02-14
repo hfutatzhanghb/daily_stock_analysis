@@ -558,8 +558,11 @@ class Config:
         自动创建数据库目录（如果不存在）
         """
         db_path = Path(self.database_path)
+        if not db_path.is_absolute():
+            project_root = Path(__file__).resolve().parent.parent
+            db_path = (project_root / db_path).resolve()
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        return f"sqlite:///{db_path.absolute()}"
+        return f"sqlite:///{db_path}"
 
 
 # === 便捷的配置访问函数 ===

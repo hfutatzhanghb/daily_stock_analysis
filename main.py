@@ -67,6 +67,7 @@ def parse_arguments() -> argparse.Namespace:
   python main.py --schedule         # 启用定时任务模式
   python main.py --market-review    # 仅运行大盘复盘
   python main.py --industries-ma5-only  # 仅输出五月均线上的行业板块
+  python main.py --cxg-ths            # 输出创历史新高榜单（全部），并单独强调连续≥2天
         '''
     )
 
@@ -129,6 +130,12 @@ def parse_arguments() -> argparse.Namespace:
         '--industries-ma5-only',
         action='store_true',
         help='仅输出五月均线之上的一级行业板块，不执行个股分析和大盘复盘'
+    )
+
+    parser.add_argument(
+        '--cxg-ths',
+        action='store_true',
+        help='拉取同花顺创历史新高榜单并入库，输出全部创新高股票，并单独强调连续≥2天的股票'
     )
 
     parser.add_argument(
@@ -524,6 +531,60 @@ def main() -> int:
                 logger.warning(msg)
                 if not args.no_notify and notifier.is_available():
                     notifier.send(f"📊 五月均线行业\n\n{msg}")
+            return 0
+
+        # 模式1b: 创历史新高榜单（全部 + 连续≥2天单独强调）
+        if getattr(args, 'cxg_ths', False):
+            import akshare as ak
+            from src.storage import get_db
+            from src.notification import NotificationService
+
+            def _row_line(r):
+                pct = f"{r.pct_chg:.2f}%" if r.pct_chg is not None else "-"
+                price = f"{r.latest_price:.2f}" if r.latest_price is not None else "-"
+                data_date = r.data_date.isoformat() if r.data_date else "-"
+                return f"| {r.rank} | {r.code} | {r.name or '-'} | {pct} | {price} | {r.consecutive_days or 1} | {data_date} |"
+
+            logger.info("模式: 创历史新高榜单（全部 + 连续≥2天强调）")
+            notifier = NotificationService()
+            date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+            try:
+                df = ak.stock_rank_cxg_ths(symbol="历史新高")
+                db = get_db()
+                n = db.save_stock_rank_cxg_ths(df)
+                logger.info("同花顺历史新高已入库，共 %d 条", n)
+                rows = db.get_stock_rank_cxg_ths()
+                consecutive_2plus = [r for r in rows if (r.consecutive_days or 0) >= 2]
+                # 1) 全部创历史新高
+                lines = [
+                    "# 创历史新高榜单（全部）\n",
+                    f"*更新: {date_str}* 共 {len(rows)} 只\n",
+                    "",
+                    "| 排名 | 代码 | 名称 | 涨跌幅 | 最新价 | 连续天数 | 数据日期 |",
+                    "|------|------|------|--------|--------|----------|----------|",
+                ]
+                for r in rows:
+                    lines.append(_row_line(r))
+                # 2) 连续≥2天单独强调
+                lines.append("")
+                lines.append("---")
+                lines.append("")
+                lines.append("## 连续两天及以上创历史新高（强调）\n")
+                lines.append(f"*共 {len(consecutive_2plus)} 只*\n")
+                lines.append("| 排名 | 代码 | 名称 | 涨跌幅 | 最新价 | 连续天数 | 数据日期 |")
+                lines.append("|------|------|------|--------|--------|----------|----------|")
+                for r in consecutive_2plus:
+                    lines.append(_row_line(r))
+                report_text = "\n".join(lines)
+                logger.info("创历史新高:\n%s", report_text)
+                report_filename = f"cxg_ths_{datetime.now().strftime('%Y%m%d')}.md"
+                notifier.save_report_to_file(report_text, report_filename)
+                if not args.no_notify and notifier.is_available():
+                    notifier.send(f"📈 创历史新高\n\n{report_text}")
+            except Exception as e:
+                logger.exception("创历史新高任务失败: %s", e)
+                if not args.no_notify and notifier.is_available():
+                    notifier.send(f"📈 创历史新高任务异常: {e}")
             return 0
 
         # 模式2: 仅大盘复盘
