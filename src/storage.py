@@ -630,6 +630,8 @@ class DatabaseManager:
             return 0
 
         saved_count = 0
+        query_ctx = query_context or {}
+        current_query_id = (query_ctx.get("query_id") or "").strip()
 
         with self.get_session() as session:
             try:
@@ -666,14 +668,30 @@ class DatabaseManager:
                         existing.fetched_at = datetime.now()
 
                         if query_context:
-                            existing.query_id = query_context.get("query_id") or existing.query_id
-                            existing.query_source = query_context.get("query_source") or existing.query_source
-                            existing.requester_platform = query_context.get("requester_platform") or existing.requester_platform
-                            existing.requester_user_id = query_context.get("requester_user_id") or existing.requester_user_id
-                            existing.requester_user_name = query_context.get("requester_user_name") or existing.requester_user_name
-                            existing.requester_chat_id = query_context.get("requester_chat_id") or existing.requester_chat_id
-                            existing.requester_message_id = query_context.get("requester_message_id") or existing.requester_message_id
-                            existing.requester_query = query_context.get("requester_query") or existing.requester_query
+                            # Keep the first query_id to avoid overwriting historical links.
+                            if not existing.query_id and current_query_id:
+                                existing.query_id = current_query_id
+                            existing.query_source = (
+                                query_context.get("query_source") or existing.query_source
+                            )
+                            existing.requester_platform = (
+                                query_context.get("requester_platform") or existing.requester_platform
+                            )
+                            existing.requester_user_id = (
+                                query_context.get("requester_user_id") or existing.requester_user_id
+                            )
+                            existing.requester_user_name = (
+                                query_context.get("requester_user_name") or existing.requester_user_name
+                            )
+                            existing.requester_chat_id = (
+                                query_context.get("requester_chat_id") or existing.requester_chat_id
+                            )
+                            existing.requester_message_id = (
+                                query_context.get("requester_message_id") or existing.requester_message_id
+                            )
+                            existing.requester_query = (
+                                query_context.get("requester_query") or existing.requester_query
+                            )
                     else:
                         try:
                             with session.begin_nested():
@@ -689,14 +707,14 @@ class DatabaseManager:
                                     source=source,
                                     published_date=published_date,
                                     fetched_at=datetime.now(),
-                                    query_id=(query_context or {}).get("query_id"),
-                                    query_source=(query_context or {}).get("query_source"),
-                                    requester_platform=(query_context or {}).get("requester_platform"),
-                                    requester_user_id=(query_context or {}).get("requester_user_id"),
-                                    requester_user_name=(query_context or {}).get("requester_user_name"),
-                                    requester_chat_id=(query_context or {}).get("requester_chat_id"),
-                                    requester_message_id=(query_context or {}).get("requester_message_id"),
-                                    requester_query=(query_context or {}).get("requester_query"),
+                                    query_id=current_query_id or None,
+                                    query_source=query_ctx.get("query_source"),
+                                    requester_platform=query_ctx.get("requester_platform"),
+                                    requester_user_id=query_ctx.get("requester_user_id"),
+                                    requester_user_name=query_ctx.get("requester_user_name"),
+                                    requester_chat_id=query_ctx.get("requester_chat_id"),
+                                    requester_message_id=query_ctx.get("requester_message_id"),
+                                    requester_query=query_ctx.get("requester_query"),
                                 )
                                 session.add(record)
                                 session.flush()
@@ -820,16 +838,24 @@ class DatabaseManager:
         limit: int = 50
     ) -> List[AnalysisHistory]:
         """
-        查询分析历史记录
+        Query analysis history records.
+
+        Notes:
+        - If query_id is provided, perform exact lookup and ignore days window.
+        - If query_id is not provided, apply days-based time filtering.
         """
         cutoff_date = datetime.now() - timedelta(days=days)
 
         with self.get_session() as session:
-            conditions = [AnalysisHistory.created_at >= cutoff_date]
-            if code:
-                conditions.append(AnalysisHistory.code == code)
+            conditions = []
+
             if query_id:
                 conditions.append(AnalysisHistory.query_id == query_id)
+            else:
+                conditions.append(AnalysisHistory.created_at >= cutoff_date)
+
+            if code:
+                conditions.append(AnalysisHistory.code == code)
 
             results = session.execute(
                 select(AnalysisHistory)
@@ -1115,12 +1141,26 @@ class DatabaseManager:
                 for code in list(existing_by_code.keys()):
                     if code not in new_codes:
                         session.delete(existing_by_code[code])
-                # 更新或插入本次榜单
+                # 更新或插入本次榜单。akshare 有时把表头当首行数据（序号="序号"），需跳过
+                rank_fallback = 0
                 for _, row in df.iterrows():
                     code_val = str(row[col_code]).strip() if pd.notna(row.get(col_code)) else None
-                    if not code_val:
+                    if not code_val or code_val == "股票代码":
                         continue
-                    rank_val = int(row[col_rank]) if col_rank and pd.notna(row.get(col_rank)) else None
+                    rank_raw = row.get(col_rank) if col_rank else None
+                    if rank_raw is not None and str(rank_raw).strip() == "序号":
+                        continue
+                    rank_fallback += 1
+                    rank_val = None
+                    if col_rank and pd.notna(rank_raw):
+                        try:
+                            rn = pd.to_numeric(rank_raw, errors="coerce")
+                            if pd.notna(rn) and rn >= 0:
+                                rank_val = int(rn)
+                        except (TypeError, ValueError):
+                            pass
+                    if rank_val is None:
+                        rank_val = rank_fallback
                     name_val = str(row[col_name]).strip() if col_name and pd.notna(row.get(col_name)) else None
                     pct_chg = _float_or_none(row.get("涨跌幅"))
                     turnover_rate = _float_or_none(row.get("换手率"))
